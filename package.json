@@ -15,11 +15,19 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc",
+    "start:js": "node dist/web3.js",
+    "start": "ts-node web3.ts"
   },
   "dependencies": {
-    "@uniswap/v3-sdk": "3.11.0",
+    "@uniswap/v4-sdk": "^1.21.2",
     "dotenv": "^16.4.7",
-    "ethers": "^6.13.5"
+    "ethers": "5.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
   }
 }
