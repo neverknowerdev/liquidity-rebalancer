@@ -8,6 +8,9 @@ import getOptimalAmounts from './getOptimalAmounts';
 import { POOL_ABI, MANAGER_ABI, ERC20_ABI } from './abi';
 import dotenv from 'dotenv';
 import {getOptimalAmounts2} from "./getOptimalAmounts2";
+import {estimateSwap, getTransactionDataByPathId, quote, QuoteRequest, swapTokensOdos} from "./swapTokensOdos";
+import {TickMath} from "@uniswap/v3-sdk";
+import JSBI from "jsbi";
 
 dotenv.config();
 
@@ -35,7 +38,7 @@ interface TokenBalance {
     };
 }
 
-async function manageLiquidityPosition(poolAddress: string): Promise<boolean> {
+async function manageLiquidityPosition(poolAddress: string, tickRange: number, tickMarginToReenter: number): Promise<boolean> {
     const walletAddress = ethers.utils.getAddress(process.env.WALLET_ADDRESS || '');
     const privateKey = process.env.PRIVATE_KEY;
     if (!walletAddress || !privateKey) {
@@ -64,6 +67,8 @@ async function manageLiquidityPosition(poolAddress: string): Promise<boolean> {
         poolContract.slot0()
     ]);
 
+    const feeNumber = fee / 10000;
+
     const token0Contract = new ethers.Contract(token0Address, ERC20_ABI, signer);
     const token1Contract = new ethers.Contract(token1Address, ERC20_ABI, signer);
     const token0Decimals = Number(await token0Contract.decimals());
@@ -91,6 +96,7 @@ async function manageLiquidityPosition(poolAddress: string): Promise<boolean> {
         liquidity.toString(),
         Number(slot0.tick)
     );
+
 
     try {
         // Get balances
@@ -150,30 +156,51 @@ async function manageLiquidityPosition(poolAddress: string): Promise<boolean> {
             }
         }
 
+        // const resp = await estimateSwap(token0Address, 20000000000, token1Address);
+        // console.log('resp', resp.percentDiff > -1, resp.percentDiff);
+        // return false;
+
         if (!shouldMintNewPosition) {
-            const position = await manager.positions(tokenId);
-            const { tickLower, tickUpper, liquidity, tokensOwed0, tokensOwed1 } = position;
+            const contractPosition = await manager.positions(tokenId);
+            const { tickLower, tickUpper, liquidity, tokensOwed0, tokensOwed1 } = contractPosition;
+
+            const position = new Position({
+                pool,
+                liquidity: liquidity.toString(),
+                tickLower,
+                tickUpper,
+            });
+
             console.log(`Position Found in ${poolName} Pool (Token ID: ${tokenId}):`);
             console.log(`- Tick Range: [${tickLower}, ${tickUpper}], currentTick = ${currentTick}`);
             console.log(`- Liquidity: ${ethers.utils.formatUnits(liquidity, 0)} units`);
+            console.log(`- Currently in pool: ${position.amount0.toExact()} ${token0.symbol}, ${position.amount1.toExact()} ${token1.symbol}`)
+            console.log(JSBI.toNumber(position.amount0.numerator), JSBI.toNumber(position.amount1.numerator));
             console.log(
-                `- Fees Owed: ${ethers.utils.formatUnits(tokensOwed0, 6)} USDC.e, ${ethers.utils.formatUnits(
+                `- Fees Owed: ${ethers.utils.formatUnits(tokensOwed0, token1Decimals)} USDC.e, ${ethers.utils.formatUnits(
                     tokensOwed1,
-                    18
+                    token1Decimals
                 )} ${poolName}`
             );
 
-            // Check if position is in range
+            // Check if contractPosition is in range
             if (currentTick >= tickLower && currentTick <= tickUpper) {
-                if(currentTick - tickLower > 5n && tickUpper - currentTick > 5n) {
+                if(currentTick - tickLower > BigInt(tickMarginToReenter) && tickUpper - currentTick > BigInt(tickMarginToReenter)) {
                     console.log(`Position is within price range for ${poolName} pool. No action needed.`);
                     return false;
                 }
             }
 
+            const estimateResp = await estimateSwap(token0Address, BigInt(JSBI.toNumber(position.amount0.numerator)), token1Address);
+
+            if(estimateResp.percentDiff < -1*feeNumber) {
+                console.log(`exchange diff ${estimateResp.percentDiff} which is too big, waiting better rate. Exiting..`);
+                return false;
+            }
+
             console.log(`Position is out of range for ${poolName} pool. Closing position...`);
 
-            // Close position
+            // Close contractPosition
             const decreaseParams = {
                 tokenId,
                 liquidity,
@@ -197,7 +224,7 @@ async function manageLiquidityPosition(poolAddress: string): Promise<boolean> {
             const collectReceipt = await collectTx.wait();
             console.log(`Tokens collected. Tx hash: ${collectReceipt.transactionHash}`);
 
-            console.log('Burning position NFT...');
+            console.log('Burning contractPosition NFT...');
             const burnTx = await manager.burn(tokenId, { gasLimit: 300000 });
             const burnReceipt = await burnTx.wait();
             console.log(`Position burned. Tx hash: ${burnReceipt.transactionHash}`);
@@ -220,9 +247,8 @@ async function manageLiquidityPosition(poolAddress: string): Promise<boolean> {
             console.log(`- ${token1.symbol}: ${Number(Number(ethers.utils.formatUnits(token1Balance, token1Decimals)) / price).toFixed(2)}$`);
 
             // Mint new position
-            const tickRange = 1000n;
-            let adjustedTickLower = (BigInt(currentTick) - tickRange/2n) / BigInt(tickSpacing) * BigInt(tickSpacing);
-            let adjustedTickUpper = (BigInt(currentTick) + tickRange/2n) / BigInt(tickSpacing) * BigInt(tickSpacing);
+            let adjustedTickLower = (BigInt(currentTick) - BigInt(tickRange)/2n) / BigInt(tickSpacing) * BigInt(tickSpacing);
+            let adjustedTickUpper = (BigInt(currentTick) + BigInt(tickRange)/2n) / BigInt(tickSpacing) * BigInt(tickSpacing);
             // if(BigInt(currentTick) - adjustedTickLower < 10n) {
             //     adjustedTickLower -= tickRange;
             // } else if (adjustedTickUpper - BigInt(currentTick) < 10n) {
@@ -244,20 +270,22 @@ async function manageLiquidityPosition(poolAddress: string): Promise<boolean> {
             );
             console.log('optimalAmounts', optimalAmounts);
 
-            if(token1Balance > optimalAmounts.token1Amount) {
-                const token1Delta = token1Balance - optimalAmounts.token1Amount;
-                console.log(`swapping ${Number(token1Delta) / 10 ** token1Decimals} ${token1.symbol} to ${token0.symbol}..`);
 
-                // return false;
-                await swapTokensShadow(token1.address, token0.address, token1Delta, token1Decimals);
-            } else if(token0Balance > optimalAmounts.token0Amount) {
-                const token0Delta = token0Balance - optimalAmounts.token0Amount;
+            const tokenIn = token1Balance > optimalAmounts.token1Amount ? token1 : token0;
+            const tokenOut = token1Balance > optimalAmounts.token1Amount ? token0 : token1;
+            const tokenInAmount = token1Balance > optimalAmounts.token1Amount ? token1Balance - optimalAmounts.token1Amount :  token0Balance - optimalAmounts.token0Amount;
+            console.log(`swapping ${Number(tokenInAmount) / 10 ** tokenIn.decimals} ${tokenIn.symbol} to ${tokenOut.symbol}..`);
 
-                console.log(`swapping ${Number(token0Delta) / 10 ** token0Decimals} ${token0.symbol} to ${token1.symbol}..`);
-
-                // return false;
-                await swapTokensShadow(token0.address, token1.address, token0Delta, token0Decimals);
+            const txReceipt = await swapTokensOdos(walletAddress, tokenIn, tokenInAmount, tokenOut.address, feeNumber, false);
+            if(txReceipt == null) {
+                return false;
             }
+
+            if(txReceipt.status !== 1) {
+                console.log('failed while swapping: ', txReceipt);
+                return false;
+            }
+            console.log('successfully swapped!');
 
             // Refresh balances
             const token0BalanceFinal = await getTokenBalance(token0Address, walletAddress);
@@ -330,7 +358,7 @@ async function manageLiquidityPosition(poolAddress: string): Promise<boolean> {
 
 async function runWeb3Tasks(): Promise<void> {
     try {
-        const x33Handled = await manageLiquidityPosition(ADDRESSES.USDC_X33_POOL);
+        const x33Handled = await manageLiquidityPosition(ADDRESSES.USDC_X33_POOL, 1000, 50);
         console.log(`Position management completed: x33=${x33Handled}`);
     } catch (error) {
         console.error('Failed to execute web3 tasks:', error);

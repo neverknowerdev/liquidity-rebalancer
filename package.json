@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@uniswap/v4-sdk": "^1.21.2",
+    "axios": "^1.8.4",
     "dotenv": "^16.4.7",
     "ethers": "5.7.2"
   },
