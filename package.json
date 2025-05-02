@@ -18,7 +18,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "tsc",
     "start:js": "node dist/web3.js",
-    "start": "ts-node web3.ts"
+    "start": "ts-node web3.ts",
+    "start-points": "ts-node sonicPointsCalculation.ts"
   },
   "dependencies": {
     "@uniswap/v4-sdk": "^1.21.2",

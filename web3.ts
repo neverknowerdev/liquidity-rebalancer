@@ -175,7 +175,6 @@ async function manageLiquidityPosition(poolAddress: string, tickRange: number, t
             console.log(`- Tick Range: [${tickLower}, ${tickUpper}], currentTick = ${currentTick}`);
             console.log(`- Liquidity: ${ethers.utils.formatUnits(liquidity, 0)} units`);
             console.log(`- Currently in pool: ${position.amount0.toExact()} ${token0.symbol}, ${position.amount1.toExact()} ${token1.symbol}`)
-            console.log(JSBI.toNumber(position.amount0.numerator), JSBI.toNumber(position.amount1.numerator));
             console.log(
                 `- Fees Owed: ${ethers.utils.formatUnits(tokensOwed0, token1Decimals)} USDC.e, ${ethers.utils.formatUnits(
                     tokensOwed1,
@@ -183,46 +182,57 @@ async function manageLiquidityPosition(poolAddress: string, tickRange: number, t
                 )} ${poolName}`
             );
 
-            // Check if contractPosition is in range
-            if (currentTick >= tickLower && currentTick <= tickUpper) {
-                if(currentTick - tickLower > BigInt(tickMarginToReenter) && tickUpper - currentTick > BigInt(tickMarginToReenter)) {
+            const liquidityAmount = JSBI.toNumber(position.liquidity);
+
+            if(liquidityAmount > 0) {
+                if (currentTick >= tickLower && currentTick <= tickUpper) {
+                    if (currentTick - tickLower < BigInt(tickMarginToReenter) || tickUpper - currentTick < BigInt(tickMarginToReenter)) {
+                        console.log('withing tickMarginToReenter..');
+                        const estimateResp = await estimateSwap(token0Address, BigInt(JSBI.toNumber(position.amount0.numerator)), token1Address);
+
+                        if (estimateResp.percentDiff < -1 * feeNumber) {
+                            console.log(`exchange diff ${estimateResp.percentDiff} which is too big, waiting better rate. Exiting..`);
+                            return false;
+                        }
+                    }
+
                     console.log(`Position is within price range for ${poolName} pool. No action needed.`);
                     return false;
                 }
             }
 
-            const estimateResp = await estimateSwap(token0Address, BigInt(JSBI.toNumber(position.amount0.numerator)), token1Address);
-
-            if(estimateResp.percentDiff < -1*feeNumber) {
-                console.log(`exchange diff ${estimateResp.percentDiff} which is too big, waiting better rate. Exiting..`);
-                return false;
+            if(liquidityAmount == 0) {
+                console.log(`Position has zero liquidity in ${poolName} pool. Closing position...`);
+            } else {
+                console.log(`Position is out of range for ${poolName} pool. Closing position...`);
             }
 
-            console.log(`Position is out of range for ${poolName} pool. Closing position...`);
 
-            // Close contractPosition
-            const decreaseParams = {
-                tokenId,
-                liquidity,
-                amount0Min: 0,
-                amount1Min: 0,
-                deadline: Math.floor(Date.now() / 1000) + 1800
-            };
-            console.log('Decreasing liquidity...');
-            const decreaseTx = await manager.decreaseLiquidity(decreaseParams, { gasLimit: 500000 });
-            const decreaseReceipt = await decreaseTx.wait();
-            console.log(`Liquidity decreased. Tx hash: ${decreaseReceipt.transactionHash}`);
+            if(liquidityAmount > 0) {
+                // Close contractPosition
+                const decreaseParams = {
+                    tokenId,
+                    liquidity,
+                    amount0Min: 0,
+                    amount1Min: 0,
+                    deadline: Math.floor(Date.now() / 1000) + 1800
+                };
+                console.log('Decreasing liquidity...');
+                const decreaseTx = await manager.decreaseLiquidity(decreaseParams, {gasLimit: 500000});
+                const decreaseReceipt = await decreaseTx.wait();
+                console.log(`Liquidity decreased. Tx hash: ${decreaseReceipt.transactionHash}`);
 
-            const collectParams = {
-                tokenId,
-                recipient: walletAddress,
-                amount0Max: ethers.utils.parseUnits('1000000', token0Decimals),
-                amount1Max: ethers.utils.parseUnits('1000000', token1Decimals)
-            };
-            console.log('Collecting tokens and fees...');
-            const collectTx = await manager.collect(collectParams, { gasLimit: 500000 });
-            const collectReceipt = await collectTx.wait();
-            console.log(`Tokens collected. Tx hash: ${collectReceipt.transactionHash}`);
+                const collectParams = {
+                    tokenId,
+                    recipient: walletAddress,
+                    amount0Max: ethers.utils.parseUnits('1000000', token0Decimals),
+                    amount1Max: ethers.utils.parseUnits('1000000', token1Decimals)
+                };
+                console.log('Collecting tokens and fees...');
+                const collectTx = await manager.collect(collectParams, {gasLimit: 500000});
+                const collectReceipt = await collectTx.wait();
+                console.log(`Tokens collected. Tx hash: ${collectReceipt.transactionHash}`);
+            }
 
             console.log('Burning contractPosition NFT...');
             const burnTx = await manager.burn(tokenId, { gasLimit: 300000 });

@@ -196,6 +196,7 @@ export async function swapTokensOdos(walletAddress: string, tokenIn: Token, toke
     }
 
     const txData = await getTransactionDataByPathId(walletAddress, estimateResp.pathId, simulate);
+    let txNonce = txData.nonce;
 
     const allowance = await tokenInContract.allowance(walletAddress, ADDRESSES.SWAP_ROUTER);
     if (BigInt(allowance) < tokenInAmount) {
@@ -203,13 +204,13 @@ export async function swapTokensOdos(walletAddress: string, tokenIn: Token, toke
         const approveTx = await tokenInContract.approve(txData.to, tokenInAmount, {gasLimit: 100000});
         await approveTx.wait();
 
-        txData.nonce++;
+        txNonce++;
     }
 
     const transaction: ethers.providers.TransactionRequest = {
         to: txData.to,
         from: txData.from,
-        nonce: txData.nonce,
+        nonce: txNonce,
         gasLimit: ethers.BigNumber.from(txData.gas),
         gasPrice: ethers.BigNumber.from(txData.gasPrice),
         value: ethers.BigNumber.from(txData.value),
