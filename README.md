@@ -1,4 +1,4 @@
-This is repositoty to manage liquidity on Shadow.so exchange automatically.
+This is repositoty to manage liquidity on https://shadow.so exchange automatically on Sonic network.
 
 It's expected to be run every X seconds.
 
